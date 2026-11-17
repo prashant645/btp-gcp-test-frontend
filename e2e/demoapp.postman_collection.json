@@ -1,0 +1,143 @@
+{
+  "info": {
+    "name": "demoapp e2e",
+    "description": "Run by scripts/runTest.sh after each dev and qa deploy. Frontend-to-backend integration: the frontend must serve the backend's response, from the backend configured for this environment. Variables: rootUrl, backendUrl, expectedVersion, checkGateway.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "GET /version returns the deployed version",
+      "request": {
+        "method": "GET",
+        "url": "{{rootUrl}}/version"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', () => pm.response.to.have.status(200));",
+              "pm.test('version matches the deployed commit', () => pm.expect(pm.response.text()).to.eql(pm.variables.get('expectedVersion')));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "GET / returns the page",
+      "request": {
+        "method": "GET",
+        "url": "{{rootUrl}}/"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', () => pm.response.to.have.status(200));",
+              "pm.test('content type is text/html', () => pm.expect(pm.response.headers.get('Content-Type')).to.match(/^text\\/html/));",
+              "pm.test('page calls /api/greeting', () => pm.expect(pm.response.text()).to.include(\"fetch('/api/greeting')\"));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Backend GET /version (the backend this environment is configured with)",
+      "request": {
+        "method": "GET",
+        "url": "{{backendUrl}}/version"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('backend is up', () => pm.response.to.have.status(200));",
+              "pm.variables.set('liveBackendVersion', pm.response.text());"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "GET /api/greeting returns the backend's response",
+      "request": {
+        "method": "GET",
+        "url": "{{rootUrl}}/api/greeting"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200 (the frontend reached the backend)', () => pm.response.to.have.status(200));",
+              "pm.test('message is Hello World', () => pm.expect(pm.response.json().message).to.eql('Hello World'));",
+              "pm.test('frontend uses the backend configured for this environment', () => pm.expect(pm.response.json().backendVersion).to.eql(pm.variables.get('liveBackendVersion')));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "GET /healthz returns OK",
+      "request": {
+        "method": "GET",
+        "url": "{{rootUrl}}/healthz"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', () => pm.response.to.have.status(200));",
+              "pm.test('body is OK', () => pm.expect(pm.response.text()).to.eql('OK'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "GET /missing returns 404",
+      "request": {
+        "method": "GET",
+        "url": "{{rootUrl}}/missing"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 404', () => pm.response.to.have.status(404));",
+              "if (pm.variables.get('checkGateway') !== 'true') { postman.setNextRequest(null); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "POST / is blocked by the gateway",
+      "request": {
+        "method": "POST",
+        "url": "{{rootUrl}}/"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('POST is not successful', () => pm.expect(pm.response.code).to.not.be.within(200, 299));"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

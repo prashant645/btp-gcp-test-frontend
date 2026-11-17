@@ -1,0 +1,6 @@
+apiVersion: v2
+name: demoapp
+description: Frontend of the btp-demo app; calls btp-gcp-test-backend (Node.js, SAP BTP Kyma)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
