@@ -11,7 +11,8 @@
 #       from the same values file, i.e. the backend the deployed frontend is configured with.
 #   -o  results directory (default e2e/results)
 #
-# Exit: 0 passed, 99 tests failed, 1 usage or setup problem.
+# Exit: 0 passed, 99 tests failed, 98 the backend is down (not this service's fault,
+#       so the pipeline doesn't roll back), 1 usage or setup problem.
 set -uo pipefail
 
 NEWMAN_VERSION=6.2.3
@@ -49,6 +50,14 @@ fi
 if [[ -z "$backend_url" ]]; then
   echo "No backend URL: pass -b, or set backend.baseUrl in values-$env_name.yaml" >&2
   exit 1
+fi
+
+# The backend must be healthy first. If it isn't, the failure isn't this service's,
+# so don't run the tests; the pipeline skips the rollback on exit 98.
+code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' "$backend_url/healthz" || true)"
+if [[ "$code" != 200 ]]; then
+  echo "Backend is down: $backend_url/healthz -> ${code:-no answer}. Not a frontend problem, so no rollback." >&2
+  exit 98
 fi
 
 command -v npx >/dev/null || { echo "npx not found; set up Node first" >&2; exit 1; }

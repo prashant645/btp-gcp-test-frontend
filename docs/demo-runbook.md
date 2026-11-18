@@ -1,25 +1,32 @@
-# Test runbook: branching and e2e
+# Test runbook: frontend–backend e2e and branching
 
-Run these 9 tests in order. Each one lists the exact steps and what must happen for it to pass. Record each result in the table at the end.
+Two sets of tests, each with exact steps and what must happen for it to pass:
 
-These pipelines haven't run on GitHub yet. If a run doesn't match a test's expected result, stop and fix that before moving on.
+- **I1–I4: frontend–backend integration.** Run these first, in order.
+- **Tests 1–9: branching, rollback and release.**
+
+Record each result in the table at the end. If a run doesn't match a test's expected result, stop and fix that before moving on.
 
 ## Before you start
 
-- The backend (repo `btp-gcp-test-backend`) is deployed and green in the same environment. The frontend e2e calls it, so without it every frontend deploy fails e2e and rolls back.
+- Both repos have the pipeline. Each one's e2e calls the other service, so if the other one isn't deployed in that environment, e2e fails with exit 98 and doesn't roll back.
 - The 3 repo secrets are set.
 - The `production` environment exists in the repo, with at least one required reviewer. Without one, test 8 won't stop for approval.
 - `git`, `curl`, `helm`, `rsync`, `perl` and Node are installed.
 - Your working copy has no uncommitted changes when you run each test.
 
-Set these in your terminal. Replace `<owner>/<repo>` and the kubeconfig path:
+Set these in your terminal. Replace `<owner>/<repo>`, the kubeconfig path and the two clone paths:
 
 ```bash
-export REPO=<owner>/<repo>
+export REPO=<owner>/<repo>                                   # the frontend repo, e.g. GTLCInfra/btp-gcp-test-frontend
 export KUBECONFIG=~/path/to/kyma.kubeconfig.yaml
 export DEV_URL=https://demoapp-dev.a35836f.stage.kyma.ondemand.com
 export QA_URL=https://demoapp-qa.a35836f.stage.kyma.ondemand.com
 export PROD_URL=https://demoapp.a35836f.stage.kyma.ondemand.com
+export BACKEND_DEV_URL=https://demoapp-backend-dev.a35836f.stage.kyma.ondemand.com
+export BACKEND_QA_URL=https://demoapp-backend-qa.a35836f.stage.kyma.ondemand.com
+export FE_DIR=~/path/to/btp-gcp-test-frontend                # your clone of the frontend repo
+export BE_DIR=~/path/to/btp-gcp-test-backend                 # your clone of the backend repo
 export RELEASE=$(date +%Y.%m.%d)
 ```
 
@@ -40,6 +47,127 @@ Pull requests are created and merged in the browser at `https://github.tools.sap
 3. Click **Merge pull request**, then **Confirm merge**.
 4. If the test says so, click **Delete branch**. Never delete `develop` or `master`.
 
+## Frontend–backend use cases
+
+Both pipelines run an integration e2e after deploying:
+
+- **Frontend e2e:** the frontend's `/api/greeting` returns `Hello World` from the backend in `values-dev.yaml`, and passes the language on (`?lang=de` gives `Hallo Welt`).
+- **Backend e2e:** its own API, then the frontend's `/api/greeting`, which must return the backend version just deployed.
+
+**Rollback rule:** the pipeline that deployed a change rolls back only its own service, and only when it's the likely cause.
+
+| Situation | e2e | Rollback |
+|---|---|---|
+| The other service's `/healthz` is down | Exits 98: `Backend is down` or `Frontend is down` | Skipped. Not this service's fault |
+| Tests fail and the other service is up | Exits 99 | Rolls back this service |
+| The run redeploys the commit that's already live | Either | Skipped. Nothing to roll back to |
+
+The run stays red whenever e2e fails.
+
+**To re-run a pipeline's e2e without a code change:** open **Actions → Deploy – dev → Run workflow**, choose `develop`, and click **Run workflow**. Don't use **Re-run jobs** on an old run instead: it keeps that run's recorded rollback target, so a failure can roll back to whatever was live before that run.
+
+**Folder names:** `<backend folder>` and `<frontend folder>` are the local folders containing this code (`btp-gcp-test-backend` and `btp-gcp-test-frontend`). Each one's workflows must be in `.github/workflows/`.
+
+### I1: Deploy both, and they work together
+
+**Backend first.** The new frontend's e2e needs the new backend's languages.
+
+```bash
+cd "$BE_DIR" && git switch develop && git pull
+git switch -c feature/backend-api
+rsync -a --exclude .git --exclude .DS_Store --exclude node_modules --exclude e2e/results "<backend folder>/" ./
+git rm -r -q --ignore-unmatch github
+git add -A && git commit -m "Backend: languages, Swagger UI, e2e checks the frontend"
+git push -u origin feature/backend-api
+```
+
+**PR (backend repo):** base `develop`, compare `feature/backend-api`. Merge it, and wait for **Deploy – dev** to go green.
+
+**Then the frontend:**
+
+```bash
+cd "$FE_DIR" && git switch develop && git pull
+git switch -c feature/frontend-ui
+rsync -a --exclude .git --exclude .DS_Store --exclude node_modules --exclude e2e/results "<frontend folder>/" ./
+git rm -r -q --ignore-unmatch github scripts/cut-release-candidate.sh scripts/cut-release.sh
+git add -A && git commit -m "Frontend: language picker, new page, rollback only when at fault"
+git push -u origin feature/frontend-ui
+```
+
+**PR (frontend repo):** base `develop`, compare `feature/frontend-ui`. Merge it.
+
+**Pass when:**
+- **Deploy – dev** is green in both repos, with Rollback skipped.
+- `curl -s "$BACKEND_DEV_URL/greeting?lang=de"` prints `{"message":"Hallo Welt","lang":"de","version":"..."}`.
+- `$BACKEND_DEV_URL/docs` in a browser shows Swagger UI. **Try it out** on `/greeting` works.
+- `$DEV_URL` in a browser shows **Hello World**, a green **connected** status, and the backend and frontend versions. The language buttons change the greeting. The **Swagger UI** link opens the backend's docs.
+
+### I2: Backend down: the frontend doesn't roll back
+
+```bash
+kubectl -n default scale deploy/demoapp-backend --replicas=0
+```
+
+Wait a few seconds. Then, in the frontend repo, start **Deploy – dev** with **Run workflow**.
+
+**Pass when:**
+- The browser shows **Backend unavailable** with a red **unavailable** status.
+- **Deploy – dev** has **e2e red**, and its log says `Backend is down ... no rollback`.
+- **Rollback is skipped**, and the whole run is red.
+
+**Undo:** `kubectl -n default scale deploy/demoapp-backend --replicas=1`. Then start **Deploy – dev** with **Run workflow** again. It's green.
+
+### I3: Backend breaks the frontend: the backend rolls itself back
+
+In the backend repo, rename `message` to `text` and update the backend's own tests to match, so only the integration check can catch it:
+
+```bash
+cd "$BE_DIR" && git switch develop && git pull
+git switch -c feature/rename-message
+perl -pi -e 's/\bmessage\b/text/g' server.js test/server.test.js e2e/backend.postman_collection.json
+npm test
+git commit -am "Rename message to text"
+git push -u origin feature/rename-message
+```
+
+**PR (backend repo):** base `develop`, compare `feature/rename-message`. Merge it.
+
+**Pass when:**
+- `npm test` passed, and the backend's **CI** is green.
+- The **backend's** **Deploy – dev** has Build & Test, Deploy and smoke green, **e2e red**, and **Rollback green**.
+- The e2e log fails only on `Frontend GET /api/greeting returns this backend's response`. The backend's own checks pass.
+- `curl -s "$BACKEND_DEV_URL/greeting"` prints `"message"` again, and `$DEV_URL` shows **Hello World**. The frontend wasn't touched.
+
+**Undo:** the rename is still on `develop`. Revert the merge in the backend repo through a PR:
+
+```bash
+git switch develop && git pull
+git switch -c bugfix/revert-rename && git revert -m 1 HEAD --no-edit
+git push -u origin bugfix/revert-rename
+```
+
+Merge it. The backend's **Deploy – dev** is green.
+
+### I4: Frontend bug: the frontend rolls itself back
+
+In the frontend repo, break the frontend's Helm template so the pod loses its backend URL. Unit tests and `helm lint` still pass:
+
+```bash
+cd "$FE_DIR" && git switch develop && git pull
+git switch -c feature/lose-backend-url
+perl -pi -e 's/name: BACKEND_BASE_URL/name: BACKEND_URL/' helm/demoapp/templates/deployment.yaml
+git commit -am "Rename the backend URL variable"
+git push -u origin feature/lose-backend-url
+```
+
+**PR (frontend repo):** base `develop`, compare `feature/lose-backend-url`. Merge it.
+
+**Pass when:**
+- The frontend's **Deploy – dev** has **e2e red** with exit 99, not `Backend is down`, because the backend is healthy.
+- **Rollback is green**, and the browser shows **Hello World** again.
+
+**Undo:** revert the merge through a PR, as in I3, with the branch name `bugfix/revert-lose-backend-url`.
+
 ## Test 1: Push the pipeline to `develop` and `master`
 
 Replace `<this folder>` with the folder containing this code:
@@ -48,7 +176,7 @@ Replace `<this folder>` with the folder containing this code:
 git clone "https://github.tools.sap/$REPO.git" btp-demo-test
 cd btp-demo-test
 git switch develop || git switch -c develop
-rsync -a --exclude .git "<this folder>/" ./
+rsync -a --exclude .git --exclude .DS_Store --exclude node_modules --exclude e2e/results "<this folder>/" ./
 git add -A
 git commit -m "Add post-deploy e2e, rollback and QA gate"
 git push -u origin develop
@@ -166,6 +294,8 @@ Stop Terminal 1 with `Ctrl+C`.
 
 **PR:** base `master`, compare `develop`, title `Promote to QA`. Merge it, and keep the branch.
 
+**Do the frontend first, then the backend.** The frontend's QA e2e exits 98 until the backend is in QA, so it's red with Rollback skipped. Then promote the backend the same way: its e2e checks the new frontend, and it goes green. Then start the frontend's **Deploy – qa** with **Run workflow**. It should be green.
+
 **Pass when:**
 - **Deploy – qa** is green, with Rollback skipped.
 - `curl -s "$QA_URL/version"` prints the new `master` commit from `git rev-parse origin/master`, after `git fetch`.
@@ -276,6 +406,10 @@ Then bring the fix back into `develop`, so the next release doesn't lose it.
 
 | Test | Proves | Passed? | Run link | Date |
 |---|---|---|---|---|
+| I1 | Both deploy, and each e2e checks the other service | | | |
+| I2 | Backend down: frontend e2e red, no frontend rollback | | | |
+| I3 | A backend change that breaks the frontend rolls the backend back | | | |
+| I4 | A frontend bug rolls the frontend back | | | |
 | 1 | Pipeline is live on both branches | | | |
 | 2 | A PR runs CI and doesn't deploy | | | |
 | 3 | `develop` deploys to dev, then e2e runs | | | |
@@ -302,3 +436,9 @@ Then bring the fix back into `develop`, so the next release doesn't lose it.
 | `a branch named ... already exists` from `git switch -c` | That release was already cut. Set `RELEASE` to a new `YYYY.MM.DD` value. |
 | In test 4, `git log -1 "$BAD_MERGE"` isn't a `Merge pull request` commit | The PR was squashed or rebased. Revert with `git revert "$BAD_MERGE" --no-edit`, without `-m 1`. |
 | Merge button is greyed out | **CI** hasn't finished or is red, or branch protection needs an approval from someone other than you. |
+| I1 `/api/greeting` returns 502 but `curl "$BACKEND_DEV_URL/greeting"` works from your Mac | The frontend pod can't reach the backend's public URL from inside the cluster. Run `kubectl -n default logs deploy/hello-world`, and send me the error. |
+| I1 `frontend uses the backend configured for this environment` fails | The pod's `BACKEND_BASE_URL` doesn't match `backend.baseUrl` in `values-dev.yaml`. See the pod's value with `kubectl -n default get deploy hello-world -o yaml \| grep -A1 BACKEND_BASE_URL`. |
+| I2: e2e is green when it should be red | The backend is still up. Check `kubectl -n default get deploy demoapp-backend` shows `0/0`, then run the frontend workflow again. |
+| e2e says `Frontend is down` or `Backend is down` when it's up | The runner can't reach the other service's `/healthz`. Run `curl -i <url>/healthz` from your Mac. The URL is `backend.baseUrl` in the frontend's values file, or `consumer.frontendUrl` in the backend's. |
+| I3: the backend's e2e fails on its own checks, not only the frontend check | The `perl` command missed a file. Check `git show --stat HEAD` lists 3 files. |
+| I1: the frontend's e2e fails on `Hallo Welt` | The backend in dev is older than this change. Deploy the backend first. |

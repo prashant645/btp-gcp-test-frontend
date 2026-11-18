@@ -38,7 +38,7 @@
             "exec": [
               "pm.test('status is 200', () => pm.response.to.have.status(200));",
               "pm.test('content type is text/html', () => pm.expect(pm.response.headers.get('Content-Type')).to.match(/^text\\/html/));",
-              "pm.test('page calls /api/greeting', () => pm.expect(pm.response.text()).to.include(\"fetch('/api/greeting')\"));"
+              "pm.test('page calls /api/greeting', () => pm.expect(pm.response.text()).to.include('/api/greeting'));"
             ]
           }
         }
@@ -78,6 +78,44 @@
               "pm.test('status is 200 (the frontend reached the backend)', () => pm.response.to.have.status(200));",
               "pm.test('message is Hello World', () => pm.expect(pm.response.json().message).to.eql('Hello World'));",
               "pm.test('frontend uses the backend configured for this environment', () => pm.expect(pm.response.json().backendVersion).to.eql(pm.variables.get('liveBackendVersion')));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "GET /api/greeting?lang=de passes the language to the backend",
+      "request": {
+        "method": "GET",
+        "url": "{{rootUrl}}/api/greeting?lang=de"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', () => pm.response.to.have.status(200));",
+              "pm.test('message is Hallo Welt', () => pm.expect(pm.response.json().message).to.eql('Hallo Welt'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "GET /api/languages returns the backend's languages",
+      "request": {
+        "method": "GET",
+        "url": "{{rootUrl}}/api/languages"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', () => pm.response.to.have.status(200));",
+              "pm.test('includes English', () => pm.expect(pm.response.json().map(l => l.code)).to.include('en'));"
             ]
           }
         }

@@ -23,7 +23,7 @@ for i in $(seq 1 "$MAX_ATTEMPTS"); do
       exit 1
     fi
     root="$(curl -s "https://${HOST}/")"
-    if [[ "$root" != *"fetch('/api/greeting')"* ]]; then
+    if [[ "$root" != *"/api/greeting"* ]]; then
       echo "Unexpected / body: expected the page that calls /api/greeting" >&2
       exit 1
     fi

@@ -7,12 +7,16 @@ as helloworld-mcp calling hello-world-service).
 
 | Request | Response |
 |---|---|
-| `GET /` | HTML page that calls `/api/greeting` |
-| `GET /api/greeting` | `{"message","backendVersion"}` from the backend's `/greeting`; `502` if the backend is down or replies without `message` |
+| `GET /` | A page with the greeting, a language picker, backend status and versions, and a link to the backend's Swagger UI |
+| `GET /api/greeting?lang=<code>` | `{"message","lang","backendVersion"}` from the backend's `/greeting` (default `en`); `400` passed on for an unsupported language; `502` if the backend is down or replies without `message` |
+| `GET /api/languages` | The backend's `/languages` list; `502` if the backend is down |
 | `GET /version`, `/healthz` | the deployed commit, `OK` |
 
 The post-deploy e2e is the frontend-to-backend integration test: through the frontend's public URL,
 `/api/greeting` must return the message **and** the version of the backend configured for that environment.
+It first checks the backend's `/healthz`. If the backend is down, it exits 98 and the pipeline doesn't roll
+the frontend back, because the frontend isn't at fault. The backend's own e2e checks this frontend in the
+same way, so a backend change that breaks the frontend rolls the backend back.
 
 ## Run locally
 

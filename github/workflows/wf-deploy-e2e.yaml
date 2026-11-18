@@ -146,6 +146,8 @@ jobs:
     name: e2e
     needs: smoke
     runs-on: self-hosted
+    outputs:
+      dependency_down: ${{ steps.e2e.outputs.dependency_down }}
     steps:
       - uses: actions/checkout@v4
 
@@ -153,10 +155,17 @@ jobs:
         with:
           node-version: 22
 
+      # Exit 98: the other service (frontend or backend) is down, so this one isn't at fault.
       - name: Run e2e
+        id: e2e
         env:
           DEPLOY_ENV: ${{ inputs.deploy_env }}
-        run: bash scripts/runTest.sh -e "$DEPLOY_ENV" -v "$GITHUB_SHA"
+        run: |
+          set +e
+          bash scripts/runTest.sh -e "$DEPLOY_ENV" -v "$GITHUB_SHA"
+          code=$?
+          if [[ $code -eq 98 ]]; then echo "dependency_down=true" >> "$GITHUB_OUTPUT"; fi
+          exit $code
 
       - name: Upload results
         if: always()
@@ -168,11 +177,16 @@ jobs:
           retention-days: 14
 
   # Runs only after a successful upgrade; --atomic has already reverted a failed one.
-  # The run stays red after a rollback, so the release gate treats it as failed.
+  # Rolls back only this service, and only when it's the likely cause: skipped when the
+  # other service is down, and when the previous version is this same commit.
+  # The run stays red either way, so the release gate treats it as failed.
   rollback:
     name: Rollback
     needs: [deploy, smoke, e2e]
-    if: failure() && needs.deploy.result == 'success'
+    if: >-
+      failure() && needs.deploy.result == 'success' &&
+      needs.e2e.outputs.dependency_down != 'true' &&
+      needs.deploy.outputs.previous_version != github.sha
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
